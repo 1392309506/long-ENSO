@@ -10,6 +10,8 @@ job
 
 tmp
 
+tmp*
+
 trainer
 
 output

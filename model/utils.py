@@ -154,9 +154,3 @@ class MaskGenerator:
         mask = mask.repeat_interleave(self.scale[0], dim=0).repeat_interleave(self.scale[1], dim=1)
 
         return mask
-
-
-
-
-
-

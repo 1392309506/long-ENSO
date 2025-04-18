@@ -52,6 +52,8 @@ rm tmp1.nc tmp2.nc
 
 After the data interpolation is completed, you can refer to the [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb) to run ORCA-DL.
 
+**Note: you need to unify the units before using our statistics to normalize the data. See [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb).**
+
 ## 📋 Updates
 
 - Training data and code are coming soon.

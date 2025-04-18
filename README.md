@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![arXiv](https://img.shields.io/badge/arXiv%20paper-2404.02905-b31b1b.svg)](https://arxiv.org/abs/2405.15412)
+[![arXiv](https://img.shields.io/badge/arXiv%20paper-2405.15412-b31b1b.svg)](https://arxiv.org/abs/2405.15412)
 
 </div>
 

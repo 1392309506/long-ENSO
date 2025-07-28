@@ -12,11 +12,7 @@ tmp
 
 tmp*
 
-trainer
-
 output
-
-data
 
 *.bin
 
@@ -24,6 +20,7 @@ stat/mean
 
 stat/std
 
-
 try.ipynb
+
+run_jupyter.sh
 

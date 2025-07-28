@@ -9,14 +9,6 @@
 **This repository contains the official implementation of ORCA-DL**
 ---------------------------------------------------------------
 
-<!-- ## 📌 Overview
-
-**Brief description of your implementation (1-2 paragraphs). Mention:**
-
-* **Key contributions of the paper**
-* **Main features of this implementation**
-* **Framework/libraries used (PyTorch/TensorFlow/JAX etc.)** -->
-
 ## 🚀 Getting Started
 
 ### Installation
@@ -31,7 +23,10 @@ pip install -r requirements.txt
 
 ### Resources Download
 
-All the model weights and data can be found in  https://1drv.ms/f/c/49d761d10f0b201d/Emi9scIyaWBCrNTgRo6t12oBLnF2qGDRGj0M7-g0ekRM1A
+All the model weights and data can be found in https://1drv.ms/f/c/49d761d10f0b201d/Emi9scIyaWBCrNTgRo6t12oBLnF2qGDRGj0M7-g0ekRM1A
+
+> **Note**  
+> The data in the `train_data` and `valid_test_data` directories have been interpolated and normalized using the mean and standard deviation provided in the `stat` directory. Therefore, they can be directly fed into the model, primarily by concatenating them in the order of the variables.
 
 ### Quick Demo
 
@@ -52,11 +47,51 @@ rm tmp1.nc tmp2.nc
 
 After the data interpolation is completed, you can refer to the [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb) to run ORCA-DL.
 
-**Note: you need to unify the units before using our statistics to normalize the data. See [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb).**
+> **Importantly**
+> You need to unify the units before using our statistics to normalize the data. See [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb).
+
+### Train a new model
+
+First, download and organize the training, validation (optional), testing (optional) data, as shown below.
+
+```
+YOUR_CMIP_DATA_DIR/  # for training
+    BCC-CSM2-MR/
+        so/
+            1850_1.npy
+            ...
+        thetao/
+            ...
+        ...
+    CAS-ESM2-0/
+        ...
+
+YOUR_SODA2_DATA_DIR/  # for validation
+    so/
+        1850_1.npy
+        ...
+    thetao/
+        ...
+    ...
+
+YOUR_ORAS5_DATA_DIR/  # for validation
+    same as SODA2
+
+YOUR_GODAS_DATA_DIR/  # for testing
+    same as SODA2
+```
+
+Then, replace your corresponding dir path in `train.sh` and run `bash train.sh` in the command line.
+
+After training, you can run `bash predict.sh` to make ensemble prediction using GODAS data. You can also refer to `demo.ipynb` for a more straightforward way to make predictions.
+
+> **Note**
+> We use Fully Sharded Data Parallel (FSDP) to accelerate training. With four NVIDIA A100 GPUs, the training process consumes approximately 36 GB of GPU memory per GPU. As the number of GPUs increases, the memory required per GPU decreases, and conversely, fewer GPUs result in higher memory usage per GPU. The testing process consumes approximately 12 GB of GPU memory on a single GPU.
+> Training takes approximately 12 hours, while testing takes about 10 minutes (only saving tos).
 
 ## 📋 Updates
 
-- Training data and code are coming soon.
+- **2025-07-28:** Model predictions (initialized with GODAS) and training data and code are released.
 - **2025-03-21:** Data preprocessing processes are released.
 - **2025-03-04:** Model weights and demo code are released.
 

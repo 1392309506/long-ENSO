@@ -47,7 +47,7 @@ rm tmp1.nc tmp2.nc
 
 After the data interpolation is completed, you can refer to the [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb) to run ORCA-DL.
 
-> **Importantly**
+> **Importantly**  
 > You need to unify the units before using our statistics to normalize the data. See [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb).
 
 ### Train a new model
@@ -85,7 +85,7 @@ Then, replace your corresponding dir path in `train.sh` and run `bash train.sh` 
 
 After training, you can run `bash predict.sh` to make ensemble prediction using GODAS data. You can also refer to `demo.ipynb` for a more straightforward way to make predictions.
 
-> **Note**
+> **Note**  
 > We use Fully Sharded Data Parallel (FSDP) to accelerate training. With four NVIDIA A100 GPUs, the training process consumes approximately 36 GB of GPU memory per GPU. As the number of GPUs increases, the memory required per GPU decreases, and conversely, fewer GPUs result in higher memory usage per GPU. The testing process consumes approximately 12 GB of GPU memory on a single GPU.
 > Training takes approximately 12 hours, while testing takes about 10 minutes (only saving tos).
 

@@ -1,10 +1,12 @@
-# Data-driven Global Ocean Modeling for Seasonal to Decadal Prediction
+# Data-driven Global Ocean Modeling for Seasonal to Decadal Prediction [Accepted by *Science Advances*]
 
-<div align="center">
+<!-- <div align="center">
 
 [![arXiv](https://img.shields.io/badge/arXiv%20paper-2405.15412-b31b1b.svg)](https://arxiv.org/abs/2405.15412)
 
-</div>
+</div> -->
+
+Paper Link: [https://www.science.org/doi/full/10.1126/sciadv.adu2488](https://www.science.org/doi/full/10.1126/sciadv.adu2488)
 
 **This repository contains the official implementation of ORCA-DL**
 ---------------------------------------------------------------
@@ -25,7 +27,7 @@ pip install -r requirements.txt
 
 All the predictions, trained model weights and data can be found in https://1drv.ms/f/c/49d761d10f0b201d/Emi9scIyaWBCrNTgRo6t12oBLnF2qGDRGj0M7-g0ekRM1A
 
-> **Note**  
+> **Note**
 > The data in the `train_data` and `valid_test_data` directories have been interpolated and normalized using the mean and standard deviation provided in the `stat` directory. Therefore, they can be directly fed into the model, primarily by concatenating them in the order of the variables.
 
 ### Quick Demo
@@ -47,7 +49,7 @@ rm tmp1.nc tmp2.nc
 
 After the data interpolation is completed, you can refer to the [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb) to run ORCA-DL.
 
-> **Importantly**  
+> **Importantly**
 > You need to unify the units before using our statistics to normalize the data. See [demo.ipynb](https://github.com/OpenEarthLab/ORCA-DL/blob/main/demo.ipynb).
 
 ### Train a new model
@@ -85,7 +87,7 @@ Then, replace your corresponding dir path in `train.sh` and run `bash train.sh` 
 
 After training, you can run `bash predict.sh` to make ensemble prediction using GODAS data. You can also refer to `demo.ipynb` for a more straightforward way to make predictions.
 
-> **Note**  
+> **Note**
 > We use Fully Sharded Data Parallel (FSDP) to accelerate training. With four NVIDIA A100 GPUs, the training process consumes approximately 36 GB of GPU memory per GPU. As the number of GPUs increases, the memory required per GPU decreases, and conversely, fewer GPUs result in higher memory usage per GPU. The testing process consumes approximately 12 GB of GPU memory on a single GPU.
 > Training takes approximately 12 hours, while testing takes about 10 minutes (only saving tos).
 
@@ -100,10 +102,14 @@ After training, you can run `bash predict.sh` to make ensemble prediction using 
 **If you find this work useful, please cite our paper:**
 
 ```
-@article{guo2024data,
-  title={Data-driven Global Ocean Modeling for Seasonal to Decadal Prediction},
+@article{guo2025data,
+  title={Data-driven global ocean modeling for seasonal to decadal prediction},
   author={Guo, Zijie and Lyu, Pumeng and Ling, Fenghua and Bai, Lei and Luo, Jing-Jia and Boers, Niklas and Yamagata, Toshio and Izumo, Takeshi and Cravatte, Sophie and Capotondi, Antonietta and Ouyang, Wanli},
-  journal={arXiv preprint arXiv:2405.15412},
-  year={2024}
+  journal={Science Advances},
+  volume={11},
+  number={33},
+  pages={eadu2488},
+  year={2025},
+  publisher={American Association for the Advancement of Science}
 }
 ```

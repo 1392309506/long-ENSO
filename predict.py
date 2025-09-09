@@ -74,11 +74,11 @@ def main():
     setup_logger(testing_args, logger)
 
     # Log on each process the small summary:
-    logger.warning(
-        f"Process global rank: {testing_args.global_rank}, local rank: {testing_args.local_rank}, "
-        + f"device: {testing_args.device}, n_gpu: {testing_args.n_gpu}, "
-        + f"distributed: {bool(testing_args.local_rank != -1)}, 16-bits: {testing_args.fp16}"
-    )
+    # logger.warning(
+    #     f"Process global rank: {testing_args.global_rank}, local rank: {testing_args.local_rank}, "
+    #     + f"device: {testing_args.device}, n_gpu: {testing_args.n_gpu}, "
+    #     + f"distributed: {bool(testing_args.local_rank != -1)}, 16-bits: {testing_args.fp16}"
+    # )
     logger.info(f"Testing parameters {testing_args}")
 
     # Set seed before initializing model.

@@ -29,6 +29,3 @@ python -u predict.py \
   --log_level info \
   --dataloader_num_workers 8 \
   --per_device_eval_batch_size $batch_size
-
-
-rm batchscript-*

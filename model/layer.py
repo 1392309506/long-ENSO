@@ -17,6 +17,44 @@ from .utils import (
 )
 
 
+class DiffusionTimeEmbedding(nn.Module):
+    def __init__(self, dim, out_dim):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, out_dim),
+            nn.SiLU(),
+            nn.Linear(out_dim, out_dim),
+        )
+
+    def forward(self, t):
+        # t 是扩散时间步，通常先经过正弦位置编码
+        return self.mlp(t)
+
+class ConditionedSwinLayer(nn.Module):
+    def __init__(self, swin_layer, emb_dim, out_dim):
+        super().__init__()
+        # swin_layer 就是原本那个不许动的 SwinLayer 对象
+        self.swin_layer = swin_layer
+
+        # 针对这个层的时间映射（提纯）
+        # 为什么要再加一层 Linear？因为每个 SwinLayer 对时间的“反应”应该是不一样的
+        self.time_proj = nn.Linear(emb_dim, out_dim)
+
+    def forward(self, x, emb=None, **kwargs):
+        # x: 海洋特征图 (B, H, W, C)
+        # emb: 扩散时间步信号 (B, emb_dim)
+
+        if emb is not None:
+            # 1. 映射并对齐维度
+            # 把 (B, emb_dim) 变成 (B, 1, 1, C)
+            t_feature = self.time_proj(emb).view(emb.shape[0], 1, 1, -1)
+            # 2. 注入信号：直接相加
+            x = x + t_feature
+
+        # 3. 把注入了信号的 x 丢进那个“不能动”的 SwinLayer
+        return self.swin_layer(x, **kwargs)
+
+
 class SwiGLU(nn.Module):
     def forward(self, x):
         x, gate = x.chunk(2, dim=-1)

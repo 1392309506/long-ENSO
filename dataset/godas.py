@@ -54,9 +54,6 @@ class GodasDataset(BaseDataset):
     def get_input_var_list_cmip6(self):
         return self.input_var_list
 
-    def get_input_var_list_godas(self):
-        return [CMIP62GODAS[v] for v in self.input_var_list]
-
 
     def get_var_index(self, v_name):
         if self.mix:
@@ -66,41 +63,6 @@ class GodasDataset(BaseDataset):
                 return self.multi_lev_vars.index(v_name)
 
         return self.input_var_list.index(v_name)
-
-    def get_subset_by_years(self, start_year, end_year=None):
-        # subset for predicting values in [start_year, end_year]
-        start_idx, end_idx = None, None
-        for i in range(self.num_times):
-            year = int(self.times[i].split('_')[0])
-            if year == start_year:
-                start_idx = i - self.input_steps
-            elif end_year is not None and year == end_year:
-                end_idx = i + 11
-        if start_idx < 0 or (end_idx and end_idx > len(self)):
-            raise ValueError("invalid start year/ end year")
-        if end_idx:
-            return self.get_subset(list(range(start_idx, end_idx)))
-        else:
-            return self.get_subset(list(range(start_idx, len(self))))
-
-    def get_train_dataset(self):
-        indices = np.array(range((self.train_val_split_year - self.start_year + 1)
-                        * 12 - self.input_steps - self.predict_steps + 1))
-        return self.get_subset(indices.tolist())
-
-    def get_val_dataset(self):
-        if self.val_test_split_year is None:
-            raise ValueError("The val_test_split_year is None")
-        indices = np.array(range((self.train_val_split_year - self.start_year + 1) * 12,
-                                (self.val_test_split_year - self.start_year + 1) * 12 - self.input_steps - self.predict_steps + 1))
-        return self.get_subset(indices.tolist())
-    
-    def get_test_dataset(self):
-        if self.val_test_split_year is None:
-            raise ValueError("The val_test_split_year is None")
-        indices = np.array(range((self.val_test_split_year - self.start_year + 1) * 12,
-                                self.num_times - self.input_steps - self.predict_steps + 1))
-        return self.get_subset(indices.tolist())
 
     def get_ocean_vars(self, base_path, time_range):
         data = []
@@ -114,7 +76,7 @@ class GodasDataset(BaseDataset):
                 for i in time_range
             ]))
         return torch.cat(data).float()
-    
+
     def get_label_values(self, base_path, time_range):
         data = [torch.cat([
             self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy')).unsqueeze(0)
@@ -129,7 +91,7 @@ class GodasDataset(BaseDataset):
     def get_data_atmo(self, path):
         if not os.path.exists(path):
             assert 0
-    
+
         data = np.load(path)
         return torch.from_numpy(data).float()
 
@@ -146,9 +108,9 @@ class GodasDataset(BaseDataset):
         #     return torch.load(os.path.join(self.args.cache_sample_dir, f'{index}.pt'))
 
         start_month = int(self.times[index].split('_')[-1])
-        
-        inputs_range = range(index, index+self.input_steps)
-        labels_range = range(index+self.input_steps, index+self.input_steps+self.predict_steps)
+
+        inputs_range = range(index, index + self.input_steps)
+        labels_range = range(index + self.input_steps, index + self.input_steps + self.predict_steps)
 
         ocean_vars = self.get_ocean_vars(self.root, inputs_range)
         labels = self.get_label_values(self.root, labels_range)
@@ -162,3 +124,41 @@ class GodasDataset(BaseDataset):
         }
 
         return ret
+
+    # def get_input_var_list_godas(self):
+    #     return [CMIP62GODAS[v] for v in self.input_var_list]
+    #
+    # def get_subset_by_years(self, start_year, end_year=None):
+    #     # subset for predicting values in [start_year, end_year]
+    #     start_idx, end_idx = None, None
+    #     for i in range(self.num_times):
+    #         year = int(self.times[i].split('_')[0])
+    #         if year == start_year:
+    #             start_idx = i - self.input_steps
+    #         elif end_year is not None and year == end_year:
+    #             end_idx = i + 11
+    #     if start_idx < 0 or (end_idx and end_idx > len(self)):
+    #         raise ValueError("invalid start year/ end year")
+    #     if end_idx:
+    #         return self.get_subset(list(range(start_idx, end_idx)))
+    #     else:
+    #         return self.get_subset(list(range(start_idx, len(self))))
+    #
+    # def get_train_dataset(self):
+    #     indices = np.array(range((self.train_val_split_year - self.start_year + 1)
+    #                     * 12 - self.input_steps - self.predict_steps + 1))
+    #     return self.get_subset(indices.tolist())
+    #
+    # def get_val_dataset(self):
+    #     if self.val_test_split_year is None:
+    #         raise ValueError("The val_test_split_year is None")
+    #     indices = np.array(range((self.train_val_split_year - self.start_year + 1) * 12,
+    #                             (self.val_test_split_year - self.start_year + 1) * 12 - self.input_steps - self.predict_steps + 1))
+    #     return self.get_subset(indices.tolist())
+    #
+    # def get_test_dataset(self):
+    #     if self.val_test_split_year is None:
+    #         raise ValueError("The val_test_split_year is None")
+    #     indices = np.array(range((self.val_test_split_year - self.start_year + 1) * 12,
+    #                             self.num_times - self.input_steps - self.predict_steps + 1))
+    #     return self.get_subset(indices.tolist())

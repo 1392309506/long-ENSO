@@ -59,12 +59,6 @@ class BaseDataset(Dataset):
         if self.val_test_split_year is not None:
             assert self.train_val_split_year < self.val_test_split_year <= self.end_year
 
-    def convert_vname_godas_to_cmip6(self, v):
-        return GODAS2CMIP6[v]
-
-    def convert_vname_cmip6_to_godas(self, v):
-        return CMIP62GODAS[v]
-
     def _cache_sample(self, index, data):
         torch.save(data, os.path.join(self.args.cache_sample_dir, f'{index}.pt'))
 
@@ -141,25 +135,9 @@ class BaseDataset(Dataset):
             if times != self.times:
                 assert 0, f"prepare data error, inconsistency of times, check {self.root} {v}."
 
-    def get_cache_sample(self, index):
-        return torch.load(os.path.join(self.args.cache_sample_dir, f'{index}.pt'))
-
     def get_data(self, path):
         data = np.load(path)
         return torch.from_numpy(data)
-
-    def get_values(self, base_path, var_list, time_range, cat=True):
-        data = [
-            torch.stack(
-                [self.get_data(
-                    os.path.join(base_path, v, f'{self.times[i]}.npy')
-                ) for v in var_list] #[:self.num_depths]
-            ) for i in time_range
-        ]
-        if cat:
-            return torch.cat(data).float()
-        else:
-            return torch.stack(data).float()
 
     def get_subset(self, indices):
         return Subset(self, indices)
@@ -169,3 +147,27 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, index):
         raise NotImplementedError()
+
+
+
+    # def convert_vname_godas_to_cmip6(self, v):
+    #     return GODAS2CMIP6[v]
+    #
+    # def convert_vname_cmip6_to_godas(self, v):
+    #     return CMIP62GODAS[v]
+
+    # def get_cache_sample(self, index):
+    #     return torch.load(os.path.join(self.args.cache_sample_dir, f'{index}.pt'))
+
+    # def get_values(self, base_path, var_list, time_range, cat=True):
+    #     data = [
+    #         torch.stack(
+    #             [self.get_data(
+    #                 os.path.join(base_path, v, f'{self.times[i]}.npy')
+    #             ) for v in var_list] #[:self.num_depths]
+    #         ) for i in time_range
+    #     ]
+    #     if cat:
+    #         return torch.cat(data).float()
+    #     else:
+    #         return torch.stack(data).float()

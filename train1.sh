@@ -1,4 +1,3 @@
-
 seed=1
 lr='2e-4'
 batch_size=8
@@ -6,29 +5,27 @@ epoch=5
 input_steps=1
 predict_steps=1
 max_t=6
-input_var_list='so thetao tos uo vo zos'
+input_var_list='so thetao uo vo'
 
 save_eval_steps=800
 
 dist_port=$[12345+$[$RANDOM%12345]]
 
-output_dir=./output/train/exp1 # configure your output directory
-data_dir=YOUR_CMIP_DATA_DIR # replace with your CMIP data directory, e.g., ./download/train_data/
-soda_dir=YOUR_SODA_DATA_DIR # replace with your SODA data directory, e.g., ./download/valid_test_data/SODA2
-oras5_dir=YOUR_ORAS5_DATA_DIR # replace with your ORAS5 data directory e.g., ./download/valid_test_data/ORAS5
+output_dir=./output/train_stage1/exp1 # configure your output directory
+data_dir=./data/godas # replace with your GODAS data directory
 
-### If you use SLURM to launch the training script, you can use the following command:
+# If you use SLURM to launch the training script, you can use the following command:
 # node_num=1
 # gpu_per_node=4
 # srun -p YOUR_PARTITION_NAME --ntasks-per-node=$gpu_per_node -N $node_num --gres=gpu:$gpu_per_node --async \
-#     python -u train.py
+#     python -u train_stage1.py
 
-### Otherwise, you can use torchrun to launch the training script
+# Otherwise, you can use torchrun to launch the training script
 
 torchrun --nproc_per_node=4 \
-    train.py \
-        --in_chans 16 16 1 16 16 1 \
-        --out_chans 16 16 1 16 16 1 \
+    train_stage1.py \
+        --in_chans 16 16 16 16 \
+        --out_chans 16 16 16 16 \
         --max_t $max_t \
         --atmo_var_list tauu tauv \
         --atmo_dims 2 \
@@ -65,11 +62,8 @@ torchrun --nproc_per_node=4 \
         --adam_epsilon 1e-6 \
         --lr_scheduler_type cosine \
         --warmup_ratio 0.1 \
-        --valid_data_dir $soda_dir $oras5_dir \
-        --end_year 1980 \
         --evaluation_strategy steps \
         --eval_steps $save_eval_steps \
         --load_best_model_at_end True
 
-
-#          --do_eval \
+#        --do_eval \

@@ -1,4 +1,5 @@
 import torch
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -17,14 +18,58 @@ from .layer import (
     PatchExpanding,
     SwinDecoderStage,
     SwinLayer,
-    RotaryTimeEmbed,
+    RotaryTimeEmbed, DiffusionTimeEmbedding,
 )
 
 from .utils import (
     compute_land_mask,
     prepare_land_mask_2d,
-) 
+)
 
+def _timestep_embedding(timesteps: torch.LongTensor, dim: int) -> torch.FloatTensor:
+    half = dim // 2
+    denom = max(half - 1, 1)
+    freqs = torch.exp(
+        -math.log(10000) * torch.arange(0, half, dtype=torch.float32, device=timesteps.device) / denom
+    )
+    args = timesteps.float()[:, None] * freqs[None]
+    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2 == 1:
+        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+    return emb
+
+
+class _ResBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
+class PerturbationModel(nn.Module):
+    def __init__(self, in_chans: int, cond_chans: int, base_chans: int, time_embed_dim: int):
+        super().__init__()
+        self.time_embed = DiffusionTimeEmbedding(time_embed_dim, base_chans)
+        self.in_proj = nn.Conv2d(in_chans + cond_chans, base_chans, kernel_size=3, padding=1)
+        self.res1 = _ResBlock(base_chans)
+        self.res2 = _ResBlock(base_chans)
+        self.out_proj = nn.Conv2d(base_chans, in_chans, kernel_size=3, padding=1)
+
+    def forward(self, x_t, t, cond):
+        # x_t: (B, C, H, W), cond: (B, C_cond, H, W)
+        h = torch.cat([x_t, cond], dim=1)
+        h = self.in_proj(h)
+        t_emb = self.time_embed(_timestep_embedding(t, self.time_embed.mlp[0].in_features))
+        h = h + t_emb[:, :, None, None]
+        h = self.res1(h)
+        h = self.res2(h)
+        return self.out_proj(h)
 
 @dataclass
 class ORCADLOutput(ModelOutput):
@@ -64,6 +109,10 @@ class ORCADLConfig(PretrainedConfig):
         max_t=None,
         atmo_dims=3,
         atmo_embed_dims=64,
+        diffusion_steps=1000,
+        diffusion_beta_start=1e-4,
+        diffusion_beta_end=2e-2,
+        diffusion_time_embed_dim=256,
         mask_patch_size=(8,12),
         mask_ratio=0.8,
         use_mask_token=False,
@@ -109,6 +158,10 @@ class ORCADLConfig(PretrainedConfig):
 
         self.atmo_dims = atmo_dims
         self.atmo_embed_dims = atmo_embed_dims
+        self.diffusion_steps = diffusion_steps
+        self.diffusion_beta_start = diffusion_beta_start
+        self.diffusion_beta_end = diffusion_beta_end
+        self.diffusion_time_embed_dim = diffusion_time_embed_dim
 
         self.mask_patch_size = mask_patch_size
         self.mask_ratio = mask_ratio
@@ -324,7 +377,7 @@ class FusionModule(nn.Module):
         # stochastic depth
         dpr = [x.item() for x in torch.linspace(0, config.drop_path_rate, sum(config.lg_depths))]
 
-        window_size = (config.input_shape[0] // config.patch_size[0] // (2 ** (len(config.enc_depths) -1)), 
+        window_size = (config.input_shape[0] // config.patch_size[0] // (2 ** (len(config.enc_depths) -1)),
                        config.input_shape[1] // config.patch_size[1] // (2 ** (len(config.enc_depths) -1)))
         # build stages
         self.stages = nn.ModuleList()
@@ -343,19 +396,22 @@ class FusionModule(nn.Module):
         self.pos_drop = nn.Dropout(p=config.drop_rate)
         self.pos_embed = nn.Parameter(torch.zeros(1, window_size[0] * window_size[1], self.hidden_size))
         nn.init.trunc_normal_(self.pos_embed, std=.02)
+        # 移除 self.rotate_atmo = RotaryTimeEmbed(...)
+        # self.rotate_atmo = RotaryTimeEmbed(self.hidden_size)
 
-        self.rotate_atmo = RotaryTimeEmbed(self.hidden_size)
-
-    def forward(self, x, atmo_x, lead_time, atmo_lead_time, land_mask_pad, land_mask_pad_shifted):
+    def forward(self, x, lead_time, land_mask_pad, land_mask_pad_shifted):
+        # 移除了 atmo_x 参数
         B, H, W, C = x.shape
 
-        atmo_x = atmo_x.permute(0, 3, 1, 2).contiguous()
-        atmo_x = self.rotate_atmo(atmo_x, lead_time if atmo_lead_time is None else atmo_lead_time)
-        atmo_x = atmo_x.permute(0, 2, 3, 1).contiguous()
+        # 移除所有 atmo_x 的加权融合逻辑
+        # 直接对合并后的海洋特征进行全局耦合
+        # atmo_x = atmo_x.permute(0, 3, 1, 2).contiguous()
+        # atmo_x = self.rotate_atmo(atmo_x, lead_time if atmo_lead_time is None else atmo_lead_time)
+        # atmo_x = atmo_x.permute(0, 2, 3, 1).contiguous()
 
-        atmo_w = torch.sum(atmo_x * x, dim=-1, keepdim=True)
+        # atmo_w = torch.sum(atmo_x * x, dim=-1, keepdim=True)
 
-        x = x + atmo_w * atmo_x
+        # x = x + atmo_w * atmo_x
 
         x = x.reshape(B, -1, C)
 
@@ -364,12 +420,7 @@ class FusionModule(nn.Module):
         x = x.reshape(B, H, W, C)
 
         for i in range(self.num_stages):
-            x, _ = self.stages[i](
-                x,
-                land_mask_pad,
-                land_mask_pad_shifted,
-                lead_time
-            )
+            x, _ = self.stages[i](x, land_mask_pad, land_mask_pad_shifted, lead_time)
         return x
 
 
@@ -421,8 +472,6 @@ class ORCADLModel(ORCADLPreTrainedModel):
         self.enc_ocean = OceanEncoders(config)
         self.fusion = FusionModule(config)
         self.dec_ocean = OceanDecoders(config)
-        self.enc_atmo = AtmoEncoder(config)
-
         self.loss_type = config.loss_type
 
         self.use_land_mask = config.use_land_mask
@@ -498,22 +547,20 @@ class ORCADLModel(ORCADLPreTrainedModel):
             loss = loss.mean()
 
         return loss
-    
+
     def forward_single_step(
         self,
         ocean_vars: torch.FloatTensor,
-        atmo_vars: torch.FloatTensor,
         lead_time: torch.LongTensor,
-        atmo_lead_time: Optional[torch.LongTensor] = None,
         mask: torch.FloatTensor = None,
         labels: torch.FloatTensor = None,
         return_dict: bool = None
     ):
-        
+
         x, enc_x = self.enc_ocean(ocean_vars, lead_time, self.all_land_mask_pad, self.all_land_mask_pad_shifted, mask)
-        x = self.fusion(x, atmo_vars, lead_time, atmo_lead_time, self.land_mask_pad_mix, self.land_mask_pad_shifted_mix)
+        x = self.fusion(x, lead_time, self.land_mask_pad_mix, self.land_mask_pad_shifted_mix)
         logits = self.dec_ocean(x, lead_time, enc_x, self.all_land_mask_pad, self.all_land_mask_pad_shifted)
-        
+
         loss = self.compute_loss(logits, labels)
 
         if not return_dict:
@@ -528,8 +575,6 @@ class ORCADLModel(ORCADLPreTrainedModel):
     def forward_multi_steps(
         self,
         ocean_vars: torch.FloatTensor,
-        atmo_vars: torch.FloatTensor,
-        atmo_lead_time: Optional[torch.LongTensor] = None,
         mask: torch.FloatTensor = None,
         labels: torch.FloatTensor = None,
         predict_time_steps: int = None,
@@ -543,9 +588,7 @@ class ORCADLModel(ORCADLPreTrainedModel):
         for t in range(predict_time_steps):
             lead_time = torch.tensor(t, device=ocean_vars.device).repeat(B)
             preds = self.forward_single_step(ocean_vars=ocean_vars,
-                                             atmo_vars=atmo_vars,
                                              lead_time=lead_time,
-                                             atmo_lead_time=atmo_lead_time,
                                              mask=mask,
                                              return_dict=False)[0]
 
@@ -576,9 +619,7 @@ class ORCADLModel(ORCADLPreTrainedModel):
     def forward(
         self,
         ocean_vars: torch.FloatTensor,
-        atmo_vars: torch.FloatTensor,
         lead_time: Optional[torch.LongTensor] = None,
-        atmo_lead_time: Optional[torch.LongTensor] = None,
         mask: torch.FloatTensor = None,
         labels: Optional[torch.FloatTensor] = None,
         predict_time_steps: Optional[int] = None,
@@ -589,22 +630,123 @@ class ORCADLModel(ORCADLPreTrainedModel):
         if predict_time_steps is None:
             predict_time_steps = getattr(self.config, 'predict_time_steps', 1)
 
-        atmo_vars = self.enc_atmo(atmo_vars, None, self.all_land_mask_pad, self.all_land_mask_pad_shifted, mask)
-
         if predict_time_steps == 1:
             if lead_time is None:
                 lead_time = torch.zeros(ocean_vars.shape[0], device=ocean_vars.device).long()
             return self.forward_single_step(ocean_vars=ocean_vars,
-                                            atmo_vars=atmo_vars,
                                             lead_time=lead_time,
-                                            atmo_lead_time=atmo_lead_time,
                                             mask=mask,
                                             labels=labels,
                                             return_dict=return_dict)
         return self.forward_multi_steps(ocean_vars=ocean_vars,
-                                        atmo_vars=atmo_vars,
-                                        atmo_lead_time=atmo_lead_time,
                                         mask=mask,
                                         labels=labels,
                                         predict_time_steps=predict_time_steps,
                                         return_dict=return_dict)
+
+
+class ORCADLPerturbationModel(ORCADLPreTrainedModel):
+    def __init__(self, config: ORCADLConfig, base_model: Optional[ORCADLModel] = None, freeze_base_model: bool = True):
+        super().__init__(config)
+        self.base_model = base_model if base_model is not None else ORCADLModel(config)
+        if freeze_base_model:
+            for p in self.base_model.parameters():
+                p.requires_grad = False
+
+        out_chans = sum(config.out_chans)
+        cond_chans = out_chans + config.atmo_dims
+        self.noise_model = PerturbationModel(
+            in_chans=out_chans,
+            cond_chans=cond_chans,
+            base_chans=config.embed_dim,
+            time_embed_dim=config.diffusion_time_embed_dim,
+        )
+
+        betas = torch.linspace(config.diffusion_beta_start, config.diffusion_beta_end, config.diffusion_steps)
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+        self.register_buffer("betas", betas)
+        self.register_buffer("alphas", alphas)
+        self.register_buffer("alphas_cumprod", alphas_cumprod)
+        self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod))
+
+    def _p_mean_variance(self, x_t: torch.FloatTensor, t: torch.LongTensor, cond: torch.FloatTensor):
+        eps_pred = self.noise_model(x_t, t, cond)
+        beta_t = self.betas[t].view(-1, 1, 1, 1)
+        alpha_t = self.alphas[t].view(-1, 1, 1, 1)
+        sqrt_one_minus = self.sqrt_one_minus_alphas_cumprod[t].view(-1, 1, 1, 1)
+        model_mean = (1.0 / torch.sqrt(alpha_t)) * (x_t - (beta_t / sqrt_one_minus) * eps_pred)
+        return model_mean, beta_t
+
+    def sample_delta(self, cond: torch.FloatTensor, shape: torch.Size):
+        x_t = torch.randn(shape, device=cond.device, dtype=cond.dtype)
+        for i in reversed(range(self.config.diffusion_steps)):
+            t = torch.full((shape[0],), i, device=cond.device, dtype=torch.long)
+            model_mean, beta_t = self._p_mean_variance(x_t, t, cond)
+            if i > 0:
+                noise = torch.randn_like(x_t)
+                x_t = model_mean + torch.sqrt(beta_t) * noise
+            else:
+                x_t = model_mean
+        return x_t
+
+    def forward(
+        self,
+        ocean_vars: torch.FloatTensor,
+        atmo_vars: torch.FloatTensor,
+        lead_time: Optional[torch.LongTensor] = None,
+        atmo_lead_time: Optional[torch.LongTensor] = None,
+        mask: torch.FloatTensor = None,
+        labels: Optional[torch.FloatTensor] = None,
+        predict_time_steps: Optional[int] = None,
+        return_dict: Optional[bool] = None,
+    ):
+        if return_dict is None:
+            return_dict = self.config.use_return_dict
+
+        base_out = self.base_model(
+            ocean_vars=ocean_vars,
+            lead_time=lead_time,
+            mask=mask,
+            labels=None,
+            predict_time_steps=predict_time_steps,
+            return_dict=True,
+        )
+        base_preds = base_out.preds
+        base_step = base_preds[:, 0] if base_preds.dim() == 5 else base_preds
+        labels_step = labels[:, 0] if (labels is not None and labels.dim() == 5) else labels
+
+        if labels_step is None:
+            if atmo_vars is None:
+                raise ValueError("atmo_vars is required for perturbation inference.")
+            cond = torch.cat([base_step, atmo_vars], dim=1)
+            delta_hat = self.sample_delta(cond, base_step.shape)
+            if base_preds.dim() == 5:
+                preds = base_preds.clone()
+                preds[:, 0] = preds[:, 0] + delta_hat
+            else:
+                preds = base_preds + delta_hat
+            if not return_dict:
+                return (preds,)
+            return ORCADLOutput(loss=None, preds=preds)
+
+        if atmo_vars is None:
+            raise ValueError("atmo_vars is required for perturbation training.")
+
+        delta = labels_step - base_step
+        B = delta.shape[0]
+        t = torch.randint(0, self.config.diffusion_steps, (B,), device=delta.device)
+        noise = torch.randn_like(delta)
+        sqrt_alpha = self.sqrt_alphas_cumprod[t].view(B, 1, 1, 1)
+        sqrt_one_minus = self.sqrt_one_minus_alphas_cumprod[t].view(B, 1, 1, 1)
+        x_t = sqrt_alpha * delta + sqrt_one_minus * noise
+
+        cond = torch.cat([base_step, atmo_vars], dim=1)
+        noise_pred = self.noise_model(x_t, t, cond)
+        loss = F.mse_loss(noise_pred, noise)
+
+        if not return_dict:
+            return (loss, base_preds)
+        return ORCADLOutput(loss=loss, preds=base_preds)

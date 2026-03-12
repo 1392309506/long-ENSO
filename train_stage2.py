@@ -8,7 +8,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.trainer_pt_utils import get_model_param_count
 
 from dataset import DataArguments, Cmip6Dataset, ReanalyCombinedDataset
-from model import ModelArguments, ORCADLConfig, ORCADLModel, ORCADLPerturbationModel
+from model import ModelArguments, ORCADLConfig, BaseModel, PerturbationModel
 
 from trainer import (
     Trainer, TrainingArguments,
@@ -101,14 +101,14 @@ def main():
     config.stage2_var_chans = stage2_var_chans
 
     # Stage2 从已训练的 stage1 base model 开始。
-    base_model = ORCADLModel.from_pretrained(
+    base_model = BaseModel.from_pretrained(
         stage2_args.base_model_path,
         config=config,
         ignore_mismatched_sizes=model_args.ignore_mismatched_sizes
     )
 
     # 在 base model 上叠加扰动头用于扩散训练。
-    model = ORCADLPerturbationModel(
+    model = PerturbationModel(
         config=config,
         base_model=base_model,
         freeze_base_model=stage2_args.freeze_base_model

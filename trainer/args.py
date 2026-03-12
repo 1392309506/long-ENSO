@@ -36,6 +36,11 @@ class TrainingArguments(transformers.TrainingArguments):
 
     def __post_init__(self):
         super().__post_init__()
+        # optim_name = self.optim.value if hasattr(self.optim, 'value') else str(self.optim)
+        # if optim_name == 'adamw_hf':
+        #     self.optim = 'adamw_torch'
+        # if self.ddp_find_unused_parameters is None:
+        #     self.ddp_find_unused_parameters = False
         if self.include_inputs_for_metrics and self.inputs_key_for_metrics is None:
             raise ValueError(
                 "--include_inputs_for_metrics requires inputs_key_for_metrics not to be None"

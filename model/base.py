@@ -128,7 +128,7 @@ class ORCADLConfig(PretrainedConfig):
         self.update(update_config)
 
 
-class ORCADLPreTrainedModel(PreTrainedModel):
+class BasePreTrainedModel(PreTrainedModel):
     config_class = ORCADLConfig
     main_input_name = "ocean_vars"
     supports_gradient_checkpointing = True

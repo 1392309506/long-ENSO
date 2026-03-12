@@ -442,6 +442,8 @@ class SwinEncoderStage(nn.Module):
         Args:
             x: Input feature, tensor size (B, H, W, C).
         """
+        print("[ SwinEncoderStage ] is_moe:", self.is_moe)
+
         B, H, W, C = x.shape
         window_size, shift_size = get_window_size((H,W), self.window_size, self.shift_size)
 

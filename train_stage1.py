@@ -6,9 +6,8 @@ from transformers import set_seed, HfArgumentParser
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.trainer_pt_utils import get_model_param_count
 
-from dataset import DataArguments, GodasDataset
-from model import ModelArguments, ORCADLConfig, ORCADLModel
-from dataclasses import replace
+from dataset import DataArguments, Cmip6Dataset, ReanalyCombinedDataset
+from model import ModelArguments, ORCADLConfig, BaseModel
 
 from trainer import (
     Trainer, TrainingArguments,
@@ -25,8 +24,7 @@ def main():
     if data_args.data_config_path is not None:
         with open(data_args.data_config_path, 'r') as f:
             data_dict = json.load(f)
-        data_args = replace(data_args, **data_dict)
-        # data_args = type("DataArguments", (), data_dict)
+        data_args = type("DataArguments", (), data_dict)
 
     setup_logger(training_args, logger)
     training_args._setup_devices
@@ -56,10 +54,10 @@ def main():
     set_seed(training_args.seed)
 
     # 构建训练/评估数据集。
-    train_dataset = GodasDataset(data_args)
+    train_dataset = Cmip6Dataset(data_args, split='train')
     eval_dataset = None
     if training_args.do_eval:
-        eval_dataset = GodasDataset(data_args)
+        eval_dataset = ReanalyCombinedDataset(data_args, data_args.valid_data_dir, split='valid')
 
     # 将输入变量名映射为索引，写入模型配置。
     var_list = train_dataset.get_input_var_list_cmip6()
@@ -68,30 +66,26 @@ def main():
     # 从头初始化模型或加载预训练权重。
     if model_args.model_path is None:
         logger.warning("Trying to train a model from scratch")
-        logger.warning("Using default model config")
-        config = ORCADLConfig()
-        # if model_args.model_config_path is not None:
-        #     pass
-        #     logger.warning(f"Using model config defined in {model_args.model_config_path}")
-        #     config = ORCADLConfig.from_json_file(model_args.model_config_path)
-        # else:
-        #     logger.warning("Using default model config")
+        if model_args.model_config_path is not None:
+            logger.warning(f"Using model config defined in {model_args.model_config_path}")
+            config = ORCADLConfig.from_json_file(model_args.model_config_path)
+        else:
+            logger.warning("Using default model config")
+            config = ORCADLConfig()
 
         config.update({
             'var_list': var_list,
             'var_index': var_index,
             'max_t': data_args.max_t,
             'predict_time_steps': data_args.predict_steps,
-            # 'in_chans': model_args.in_chans,
-            # 'out_chans': model_args.out_chans,
         })
         config.update_from_args(model_args)
 
-        model = ORCADLModel(config)
+        model = BaseModel(config)
     else:
         config = ORCADLConfig.from_pretrained(model_args.model_path)
         config.update_from_args(model_args)
-        model = ORCADLModel.from_pretrained(
+        model = BaseModel.from_pretrained(
             model_args.model_path,
             config=config,
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes
@@ -112,7 +106,6 @@ def main():
         data_collator=collate_fn
     )
 
-    # ===== 训练阶段 =====
     # 执行训练（可断点续训），并保存指标与状态。
     if training_args.do_train:
         checkpoint = None
@@ -131,7 +124,7 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    # ===== 评估阶段 =====
+    # 如需评估则执行。
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate(eval_dataset=eval_dataset)

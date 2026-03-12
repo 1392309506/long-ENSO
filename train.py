@@ -7,7 +7,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.trainer_pt_utils import get_model_param_count
 
 from dataset import DataArguments, Cmip6Dataset, ReanalyCombinedDataset
-from model import ModelArguments, ORCADLConfig, ORCADLModel
+from model import ModelArguments, ORCADLConfig, BaseModel
 
 from trainer import (
     Trainer, TrainingArguments,
@@ -88,12 +88,12 @@ def main():
         config.update_from_args(model_args)
 
         # 从配置构建新模型
-        model = ORCADLModel(config)
+        model = BaseModel(config)
     else:
         # 从预训练路径加载配置和模型权重
         config = ORCADLConfig.from_pretrained(model_args.model_path)
         config.update_from_args(model_args)  # 允许微调时覆盖部分配置
-        model = ORCADLModel.from_pretrained(
+        model = BaseModel.from_pretrained(
             model_args.model_path,
             config=config,
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes  # 允许部分权重不匹配（如分类头变化）

@@ -1,6 +1,6 @@
 seed=1
 lr='2e-4'
-batch_size=8
+batch_size=4
 epoch=5
 input_steps=1
 predict_steps=1
@@ -11,7 +11,7 @@ save_eval_steps=800
 
 dist_port=$[12345+$[$RANDOM%12345]]
 
-output_dir=./output/train_stage1/exp1 # configure your output directory
+output_dir=./output/train_stage1/exp3 # configure your output directory
 data_dir=./data/godas # replace with your GODAS data directory
 
 # If you use SLURM to launch the training script, you can use the following command:
@@ -22,7 +22,7 @@ data_dir=./data/godas # replace with your GODAS data directory
 
 # Otherwise, you can use torchrun to launch the training script
 
-torchrun --nproc_per_node=4 \
+torchrun --nproc_per_node=8 \
     train_stage1.py \
         --in_chans 16 16 16 16 \
         --out_chans 16 16 16 16 \

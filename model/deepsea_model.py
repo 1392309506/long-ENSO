@@ -19,7 +19,7 @@ from .utils import (
     prepare_land_mask_2d,
 )
 
-from .base import ORCADLOutput, ORCADLConfig, ORCADLPreTrainedModel
+from .base import ORCADLOutput, ORCADLConfig, BasePreTrainedModel
 
 
 class EncoderModule(nn.Module):
@@ -242,25 +242,7 @@ class FusionModule(nn.Module):
         return x
 
 
-class AtmoEncoder(nn.Module):
-    def __init__(self, config) -> None:
-        super().__init__()
-
-        self.encoder = EncoderModule(
-            config, config.atmo_dims, use_mask_token=config.use_mask_token, is_atmo=True
-        )
-        self.proj = nn.Linear(
-            config.embed_dim * 2**(len(config.enc_depths) - 1),
-            config.lg_hidden_dim,
-        )
-
-    def forward(self, x, lead_time, all_land_mask_pad, all_land_mask_pad_shifted, mask=None):
-        x, _ = self.encoder(x, lead_time, all_land_mask_pad, all_land_mask_pad_shifted, mask)
-        x = self.proj(x)
-        return x
-
-
-class ORCADLModel(ORCADLPreTrainedModel):
+class BaseModel(BasePreTrainedModel):
     def __init__(self, config: ORCADLConfig) -> None:
         super().__init__(config)
 
@@ -361,9 +343,13 @@ class ORCADLModel(ORCADLPreTrainedModel):
 
         loss = self.compute_loss(logits, labels)
 
+        print("lead:", lead_time[0].item())
+        print("pred mean:", logits.mean().item())
+
         if not return_dict:
             output = (logits,)
             return ((loss,) + output) if loss is not None else output
+
 
         return ORCADLOutput(
             loss=loss,
@@ -380,7 +366,7 @@ class ORCADLModel(ORCADLPreTrainedModel):
     ):
         B, _, H, W = ocean_vars.shape
         out_chans = sum(self.config.out_chans)
-        all_preds = torch.zeros(B, predict_time_steps, out_chans, H, W, device=ocean_vars.device)
+        all_preds = torch.zeros(B, predict_time_steps, out_chans, H, W, device=ocean_vars.device) #[B, T, C, H, W]
 
         for t in range(predict_time_steps):
             lead_time = torch.tensor(t, device=ocean_vars.device).repeat(B)

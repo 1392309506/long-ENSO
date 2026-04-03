@@ -65,10 +65,30 @@ def main():
     eval_dataset = None
     if training_args.do_eval:
         eval_dataset = ReanalyCombinedDataset(data_args, data_args.valid_data_dir, split='valid')
+    # 插入到 train_dataset = Cmip6Dataset(...) 之后
+    # print("\n" + "="*30 + " CHANNEL ANALYSIS " + "="*30)
+    # current_idx = 0
+    # for v in train_dataset.input_var_list:
+    #     # 模拟 get_label_values 的逻辑
+    #     is_single = v in train_dataset.single_lev_vars
+    #     # 假设从第一个 dataset 实例获取样本形状
+    #     sample_data = train_dataset.datasets[0].get_data(
+    #         os.path.join(train_dataset.datasets[0].root, v, f'{train_dataset.times[0]}.npy')
+    #     )
+    #     chans = 1 if is_single else sample_data.shape[0]
+    #     print(f"Index [{current_idx:3}:{current_idx+chans:3}] | Variable: {v:10} | Type: {'Single' if is_single else 'Multi'} | Channels: {chans}")
+    #     current_idx += chans
+    # print(f"TOTAL CHANNELS IN DATASET: {current_idx}")
+    # print("="*78 + "\n")
 
     # 将输入变量名映射为索引，写入模型配置。
     var_list = train_dataset.get_input_var_list_cmip6()
-    var_index = [train_dataset.get_var_index(v) for v in var_list]
+    # var_list = ['so', 'tauu', 'tauv', 'thetao', 'tos', 'uo', 'vo', 'zos']
+    deep_vars = ['so','thetao','uo','vo']
+    surface_vars = ['tos','zos']
+    atmo_vars = ['tauu','tauv']
+    assert set(deep_vars + surface_vars + atmo_vars) == set(var_list), f"Mismatch: {var_list}"
+    var_index = [var_list.index(v) for v in var_list]
 
     if stage2_args.base_model_path is None:
         raise ValueError("Stage2 requires --base_model_path pointing to stage1 checkpoint directory.")
@@ -86,19 +106,28 @@ def main():
     stage2_var_chans = [1 if v in single_lev_set else depth_count for v in var_list]
 
     config.update({
-        'var_list': var_list,
-        'var_index': var_index,
+        'var_list': deep_vars,
+        'var_index': [var_list.index(v) for v in deep_vars],
         'max_t': data_args.max_t,
         'predict_time_steps': data_args.predict_steps,
     })
     config.update_from_args(model_args)
 
     # Stage-2 extra metadata for conditioning and target selection.
-    config.stage2_base_vars = base_var_list
     config.stage2_full_vars = var_list
-    config.stage2_surface_vars = ['tos', 'zos']
+    config.stage2_deep_vars = deep_vars
+    config.stage2_surface_vars = surface_vars
+    config.stage2_atmo_vars = atmo_vars
     config.stage2_target_vars = ['tos']
     config.stage2_var_chans = stage2_var_chans
+
+    # print("\n[DEBUG CONFIG]")
+    # print("full_vars:", config.stage2_full_vars)
+    # print("deep_vars:", config.stage2_deep_vars)
+    # print("surface_vars:", config.stage2_surface_vars)
+    # print("auto_vars:", config.stage2_atmo_vars)
+    # print("var_chans:", config.stage2_var_chans)
+    # print("="*40)
 
     # Stage2 从已训练的 stage1 base model 开始。
     base_model = BaseModel.from_pretrained(

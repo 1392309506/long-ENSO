@@ -130,7 +130,7 @@ class ORCADLConfig(PretrainedConfig):
 
 class BasePreTrainedModel(PreTrainedModel):
     config_class = ORCADLConfig
-    main_input_name = "ocean_vars"
+    main_input_name = "deep_vars"
     supports_gradient_checkpointing = True
 
     def _init_weights(self, module):

@@ -283,7 +283,20 @@ class BaseModel(BasePreTrainedModel):
         self.max_t = config.max_t
         self.in_steps = config.in_steps
 
+        # Running stats for train-time prediction mean.
+        self._train_pred_mean_sum = 0.0
+        self._train_pred_mean_count = 0
+
         self.post_init()
+
+    def reset_train_pred_mean_stats(self):
+        self._train_pred_mean_sum = 0.0
+        self._train_pred_mean_count = 0
+
+    def get_train_pred_mean(self):
+        if self._train_pred_mean_count <= 0:
+            return None
+        return self._train_pred_mean_sum / self._train_pred_mean_count
 
     def compute_loss(
         self,
@@ -327,24 +340,31 @@ class BaseModel(BasePreTrainedModel):
 
     def forward_single_step(
         self,
-        ocean_vars: torch.FloatTensor,
+        deep_vars: torch.FloatTensor,
         lead_time: torch.LongTensor,
         mask: torch.FloatTensor = None,
         labels: torch.FloatTensor = None,
         return_dict: bool = None,
     ):
         x, enc_x = self.enc_ocean(
-            ocean_vars, lead_time, self.all_land_mask_pad, self.all_land_mask_pad_shifted, mask
+            deep_vars, lead_time, self.all_land_mask_pad, self.all_land_mask_pad_shifted, mask
         )
         x = self.fusion(x, lead_time, self.land_mask_pad_mix, self.land_mask_pad_shifted_mix)
         logits = self.dec_ocean(
             x, lead_time, enc_x, self.all_land_mask_pad, self.all_land_mask_pad_shifted
         )
 
+        if self.training:
+            with torch.no_grad():
+                batch_pred_mean = logits.detach().mean()
+                if torch.isfinite(batch_pred_mean):
+                    self._train_pred_mean_sum += float(batch_pred_mean.item())
+                    self._train_pred_mean_count += 1
+
         loss = self.compute_loss(logits, labels)
 
-        print("lead:", lead_time[0].item())
-        print("pred mean:", logits.mean().item())
+        # print("lead:", lead_time[0].item())
+        # print("pred mean:", logits.mean().item())
 
         if not return_dict:
             output = (logits,)
@@ -358,20 +378,20 @@ class BaseModel(BasePreTrainedModel):
 
     def forward_multi_steps(
         self,
-        ocean_vars: torch.FloatTensor,
+        deep_vars: torch.FloatTensor,
         mask: torch.FloatTensor = None,
         labels: torch.FloatTensor = None,
         predict_time_steps: int = None,
         return_dict: bool = None,
     ):
-        B, _, H, W = ocean_vars.shape
+        B, _, H, W = deep_vars.shape
         out_chans = sum(self.config.out_chans)
-        all_preds = torch.zeros(B, predict_time_steps, out_chans, H, W, device=ocean_vars.device) #[B, T, C, H, W]
+        all_preds = torch.zeros(B, predict_time_steps, out_chans, H, W, device=deep_vars.device) #[B, T, C, H, W]
 
         for t in range(predict_time_steps):
-            lead_time = torch.tensor(t, device=ocean_vars.device).repeat(B)
+            lead_time = torch.tensor(t, device=deep_vars.device).repeat(B)
             preds = self.forward_single_step(
-                ocean_vars=ocean_vars,
+                deep_vars=deep_vars,
                 lead_time=lead_time,
                 mask=mask,
                 return_dict=False,
@@ -388,7 +408,7 @@ class BaseModel(BasePreTrainedModel):
                         slic = slice(self.split_chans[i - 1], self.split_chans[i])
                     data.extend([all_preds[:, t - j, slic] for j in range(self.in_steps - 1, -1, -1)])
 
-                ocean_vars = torch.cat(data, dim=1)
+                deep_vars = torch.cat(data, dim=1)
 
         loss = self.compute_loss(all_preds, labels)
 
@@ -403,7 +423,7 @@ class BaseModel(BasePreTrainedModel):
 
     def forward(
         self,
-        ocean_vars: torch.FloatTensor,
+        deep_vars: torch.FloatTensor,
         lead_time: Optional[torch.LongTensor] = None,
         mask: torch.FloatTensor = None,
         labels: Optional[torch.FloatTensor] = None,
@@ -417,16 +437,16 @@ class BaseModel(BasePreTrainedModel):
 
         if predict_time_steps == 1:
             if lead_time is None:
-                lead_time = torch.zeros(ocean_vars.shape[0], device=ocean_vars.device).long()
+                lead_time = torch.zeros(deep_vars.shape[0], device=deep_vars.device).long()
             return self.forward_single_step(
-                ocean_vars=ocean_vars,
+                deep_vars=deep_vars,
                 lead_time=lead_time,
                 mask=mask,
                 labels=labels,
                 return_dict=return_dict,
             )
         return self.forward_multi_steps(
-            ocean_vars=ocean_vars,
+            deep_vars=deep_vars,
             mask=mask,
             labels=labels,
             predict_time_steps=predict_time_steps,

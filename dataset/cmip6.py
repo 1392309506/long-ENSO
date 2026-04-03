@@ -28,10 +28,10 @@ class Cmip6SingleDataset(BaseDataset):
 
         self.input_var_list = sorted(self.input_var_list)
 
-        if 'tauu' in self.input_var_list:
-            self.input_var_list.remove('tauu')
-        if 'tauv' in self.input_var_list:
-            self.input_var_list.remove('tauv')
+        # if 'tauu' in self.input_var_list:
+        #     self.input_var_list.remove('tauu')
+        # if 'tauv' in self.input_var_list:
+        #     self.input_var_list.remove('tauv')
 
         self.single_lev_vars = [v for v in self.input_var_list if v in SINGLE_LEVEL_VARS]
         self.multi_lev_vars = [v for v in self.input_var_list if v in MULTY_LEVEL_VARS]
@@ -70,6 +70,53 @@ class Cmip6SingleDataset(BaseDataset):
         if args.do_cache:
             self.cache_samples()
 
+        # =========================
+        # 🔥 MOD 1: 强制变量分组
+        # =========================
+        self.full_var_list = sorted(self.input_var_list)
+
+        self.base_vars = ['so', 'thetao', 'uo', 'vo']
+        self.surface_vars_list = ['tos', 'zos']
+        self.atmo_var_list = ['tauu','tauv']
+
+        # 校验
+        # for v in self.base_vars + self.surface_vars_list:
+        #     if v not in self.full_var_list:
+        #         raise ValueError(f"{v} not found in dataset")
+
+        # deep / surface 分类
+        self.single_lev_vars = [v for v in self.full_var_list if v in SINGLE_LEVEL_VARS]
+        self.multi_lev_vars = [v for v in self.full_var_list if v in MULTY_LEVEL_VARS]
+
+    # =========================
+    # 🔥 MOD 2: deep vars
+    # =========================
+    def get_deep_vars(self, base_path, time_range):
+        data = []
+        for v in self.base_vars:
+            if v in self.single_lev_vars:
+                combine_fn = torch.stack
+            else:
+                combine_fn = torch.cat
+
+            data.append(combine_fn([
+                self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
+                for i in time_range
+            ]))
+        return torch.cat(data).float()
+
+    # =========================
+    # 🔥 MOD 3: surface vars
+    # =========================
+    def get_surface_vars(self, base_path, time_range):
+        data = []
+        for v in self.surface_vars_list:
+            data.append(torch.stack([
+                self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
+                for i in time_range
+            ]))
+        return torch.cat(data).float()
+
     def random_lead_t(self):
         # print(self.max_t, self.t_weight.shape)
         return int(np.random.choice(np.arange(self.max_t), size=1, p=self.t_weight))
@@ -89,18 +136,6 @@ class Cmip6SingleDataset(BaseDataset):
 
         return self.input_var_list.index(v_name)
 
-    def get_ocean_vars(self, base_path, time_range):
-        data = []
-        for v in self.input_var_list:
-            if v in self.single_lev_vars:
-                combine_fn = torch.stack
-            else:
-                combine_fn = torch.cat
-            data.append(combine_fn([
-                self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
-                for i in time_range
-            ]))
-        return torch.cat(data).float()
     
     def get_label_values(self, base_path, time_range):
         data = [torch.cat([
@@ -140,16 +175,18 @@ class Cmip6SingleDataset(BaseDataset):
 
         start_month = int(self.times[index].split('_')[-1])
 
-        # lead_t = self.random_lead_t()
+        lead_t = self.random_lead_t()
         inputs_range = range(index, index+self.input_steps)
         labels_range = range(index+self.input_steps+lead_t, index+self.input_steps+lead_t+self.predict_steps)
 
-        ocean_vars = self.get_ocean_vars(self.root, inputs_range)
+        deep_vars = self.get_deep_vars(self.root, inputs_range)
+        surface_vars = self.get_surface_vars(self.root, inputs_range)
         atmo_vars = self.get_atmo_vars(self.root, inputs_range)
         labels = self.get_label_values(self.root, labels_range)
 
         return {
-            'ocean_vars': ocean_vars,
+            "deep_vars": deep_vars,
+            "surface_vars": surface_vars,
             'atmo_vars': atmo_vars,
             'labels': labels,
             'lead_time': torch.tensor(lead_t),
@@ -171,7 +208,6 @@ class Cmip6Dataset(BaseDataset):
         self.times = None
         self.split = split
 
-        self.source_ids = None
         self.init_source_id()
 
         self.max_t = args.max_t
@@ -299,19 +335,6 @@ class Cmip6Dataset(BaseDataset):
             assert 0
         return self.get_subset(indices, train=False)
 
-    def get_ocean_vars(self, base_path, time_range):
-        data = []
-        for v in self.input_var_list:
-            if v in self.single_lev_vars:
-                combine_fn = torch.stack
-            else:
-                combine_fn = torch.cat
-            data.append(combine_fn([
-                self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
-                for i in time_range
-            ]))
-        return torch.cat(data).float()
-    
     def get_label_values(self, base_path, time_range):
         data = [torch.cat([
             self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy')).unsqueeze(0)

@@ -29,7 +29,14 @@ class GodasDataset(BaseDataset):
         
         self.single_lev_vars = [v for v in self.input_var_list if v in SINGLE_LEVEL_VARS]
         self.multi_lev_vars = [v for v in self.input_var_list if v in MULTY_LEVEL_VARS]
-        self.atmo_var_list = sorted(args.atmo_var_list)
+
+        # Stage-2 uses fixed variable groups.
+        self.deep_vars = ['so', 'thetao', 'uo', 'vo']
+        self.surface_vars_list = ['tos', 'zos']
+        self.atmo_var_list = ['tauu', 'tauv']
+
+        # Keep only deep+surface vars as ocean input variables.
+        self.input_var_list = [v for v in self.input_var_list if v in (self.deep_vars + self.surface_vars_list)]
 
         self.mix = len(self.single_lev_vars) != 0 and len(self.multi_lev_vars) != 0
 
@@ -64,14 +71,23 @@ class GodasDataset(BaseDataset):
 
         return self.input_var_list.index(v_name)
 
-    def get_ocean_vars(self, base_path, time_range):
+    def get_deep_vars(self, base_path, time_range):
         data = []
-        for v in self.input_var_list:
+        for v in self.deep_vars:
             if v in self.single_lev_vars:
                 combine_fn = torch.stack
             else:
                 combine_fn = torch.cat
             data.append(combine_fn([
+                self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
+                for i in time_range
+            ]))
+        return torch.cat(data).float()
+
+    def get_surface_vars(self, base_path, time_range):
+        data = []
+        for v in self.surface_vars_list:
+            data.append(torch.stack([
                 self.get_data(os.path.join(base_path, v, f'{self.times[i]}.npy'))
                 for i in time_range
             ]))
@@ -112,12 +128,14 @@ class GodasDataset(BaseDataset):
         inputs_range = range(index, index + self.input_steps)
         labels_range = range(index + self.input_steps, index + self.input_steps + self.predict_steps)
 
-        ocean_vars = self.get_ocean_vars(self.root, inputs_range)
+        deep_vars = self.get_deep_vars(self.root, inputs_range)
+        surface_vars = self.get_surface_vars(self.root, inputs_range)
         labels = self.get_label_values(self.root, labels_range)
         atmo_vars = self.get_atmo_vars(self.root, inputs_range)
 
         ret = {
-            'ocean_vars': ocean_vars,
+            'deep_vars': deep_vars,
+            'surface_vars': surface_vars,
             'atmo_vars': atmo_vars,
             'labels': labels,
             'start_month': torch.tensor(start_month)

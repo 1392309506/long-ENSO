@@ -17,32 +17,14 @@ from trainer import (
 )
 
 from dataset import DataArguments, GodasDataset
-from model import PerturbationModel, ORCADLConfig, ModelArguments
+from model import BaseModel, ORCADLConfig, ModelArguments
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_output_vars_and_chans(model_config, fallback_vars):
-    """Resolve output variable names and channel sizes for stage2 or fallback config."""
-    target_vars = getattr(model_config, 'stage2_target_vars', None)
-    full_vars = getattr(model_config, 'stage2_full_vars', None)
-    var_chans = getattr(model_config, 'stage2_var_chans', None)
-
-    if target_vars:
-        output_vars = list(target_vars)
-        if full_vars and var_chans:
-            chan_map = {v: c for v, c in zip(full_vars, var_chans)}
-            output_chans = [chan_map[v] for v in output_vars]
-        else:
-            output_chans = [sum(model_config.out_chans)]
-        return output_vars, output_chans
-
-    return fallback_vars, list(model_config.out_chans)
-
-
 @dataclass
 class TestingArguments(TrainingArguments):
-    """Inference-time arguments, including checkpoint ensemble and save controls."""
+    """Inference-time arguments for stage1 model ensemble and save controls."""
     num_test_samples: int = field(default=None, metadata={"help": "How many samples used for testing."})
     test_data_indices: List[int] = field(default_factory=list, metadata={"help": "Samples indices in test dataset. If set, will ignore num test samples."})
     save_preds: bool = field(default=False, metadata={"help": "If True, will save model predictions and true labels."})
@@ -61,12 +43,14 @@ class TestingArguments(TrainingArguments):
 
 
 def main():
-    # 解析命令行参数并初始化日志。
     parser = HfArgumentParser((TestingArguments, DataArguments, ModelArguments))
     testing_args, data_args, model_args = parser.parse_args_into_dataclasses()
 
     setup_logger(testing_args, logger)
     logger.info(f"Testing parameters {testing_args}")
+
+    if len(testing_args.ckpt_list) == 0:
+        raise ValueError("Please provide at least one checkpoint path in --ckpt_list.")
 
     if testing_args.fixed_lead_time is not None:
         if testing_args.fixed_lead_time < 1:
@@ -79,13 +63,10 @@ def main():
 
     set_seed(testing_args.seed)
 
-    # 构建测试数据集，并校验变量顺序/索引与模型配置一致。
     test_dataset = GodasDataset(data_args)
     var_list = test_dataset.get_input_var_list_cmip6()
-    var_index = [test_dataset.get_var_index(v) for v in var_list]
 
     model_list = []
-    # 支持多 checkpoint 集成：可为所有 ckpt 复用同一个 config。
     if len(testing_args.ckpt_list) != len(testing_args.config_path_list):
         if len(testing_args.config_path_list) == 1:
             testing_args.config_path_list = [testing_args.config_path_list[0]] * len(testing_args.ckpt_list)
@@ -95,29 +76,18 @@ def main():
         else:
             raise ValueError("The config path list length should be the same as the checkpoint list length or 1.")
 
-
     for ckpt_path, cfg_path in zip(testing_args.ckpt_list, testing_args.config_path_list):
         if cfg_path is not None:
             config = ORCADLConfig.from_json_file(cfg_path)
-            model = PerturbationModel.from_pretrained(ckpt_path, config=config)
+            model = BaseModel.from_pretrained(ckpt_path, config=config)
         else:
-            model = PerturbationModel.from_pretrained(ckpt_path)
-            
-        # model = PerturbationModel.from_pretrained(ckpt_path)
-        # print("[DEBUG]:backbone")
-        # state_dict = torch.load(os.path.join(ckpt_path, "pytorch_model.bin"))
-        # print([k for k in state_dict.keys() if "backbone" in k][:10])
+            model = BaseModel.from_pretrained(ckpt_path)
 
-        # print("[DEBUG]:name and param")
-        # for name, param in model.named_parameters():
-        #     print(name, param.mean().item(), param.std().item())
-        #     break
         model.config.update({
             'predict_time_steps': data_args.predict_steps,
         })
         model_list.append(model)
 
-    # 根据用户指定的下标范围截取测试集子集。
     indices_ = None
     if testing_args.num_test_samples is not None or len(testing_args.test_data_indices) > 0:
         indices = testing_args.test_data_indices
@@ -167,17 +137,13 @@ def main():
         for k in batch:
             batch[k] = batch[k].cuda()
 
-        # 固定 lead-time 实验：用同一个 lead_time 覆盖 batch 内所有样本。
         if testing_args.fixed_lead_time is not None:
             lead_value = testing_args.fixed_lead_time - 1
             bsz = batch['deep_vars'].shape[0]
             fixed_lead = torch.full((bsz,), lead_value, device=batch['deep_vars'].device, dtype=torch.long)
             batch['lead_time'] = fixed_lead
-            if 'atmo_vars' in batch:
-                batch['atmo_lead_time'] = fixed_lead
 
         with torch.no_grad():
-            # 多模型预测取平均，实现简单集成。
             logits_sum = 0.0
             for model in model_list:
                 logits = model(**batch).preds
@@ -187,10 +153,9 @@ def main():
 
     start_months = np.concatenate(start_months, axis=0)
 
-    output_vars, output_chans = _resolve_output_vars_and_chans(model_config, var_list)
-    split_indices = np.array(output_chans)
+    output_vars = var_list
+    split_indices = np.array(model_config.out_chans)
     split_indices = list(accumulate(split_indices))[:-1]
-    # [B, C, H, W] 在 axis=1 切分；多步输出通常是 [B, T, C, H, W]，在 axis=2 切分。
     split_axis = 1 if preds and preds[0].ndim == 4 else 2
 
     preds = [np.split(p, split_indices, axis=split_axis) for p in preds]
@@ -199,8 +164,7 @@ def main():
         all_preds.append(np.concatenate([p[i] for p in preds], axis=0))
 
     for v, pred in zip(output_vars, all_preds):
-        # 仅保存用户指定变量；多步输出按 step 拆分为多个 .pt 文件。
-        if testing_args.save_preds and v in testing_args.save_vars:
+        if testing_args.save_preds and (len(testing_args.save_vars) == 0 or v in testing_args.save_vars):
             pred_arr = pred
             if pred_arr.ndim == 4 and pred_arr.shape[1] == 1:
                 pred_arr = pred_arr[:, 0]
@@ -214,9 +178,9 @@ def main():
                 raise ValueError(f"Unexpected prediction shape for {v}: {pred_arr.shape}")
 
     json.dump(init_time_list, open(os.path.join(outdir, 'init_times.json'), 'w'), indent=4)
+    np.save(os.path.join(outdir, 'start_months.npy'), start_months)
 
     print('\n' + '*'*10 + ' Done ' + '*'*10)
-
 
 
 if __name__ == "__main__":

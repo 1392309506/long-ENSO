@@ -5,7 +5,7 @@ set -euo pipefail
 # GPU configuration: modify this line to specify which GPUs to use
 # Example: CUDA_GPUS="0,1,2,3" to use GPUs 0-3, or "" to use all GPUs
 CUDA_GPUS="1,2,3,4,5,6,7"
-num_gpus=7
+num_gpus=8
 
 if [ -n "$CUDA_GPUS" ]; then
   export CUDA_VISIBLE_DEVICES="$CUDA_GPUS"
@@ -23,29 +23,32 @@ epoch=5
 input_steps=1
 predict_steps=1
 max_t=6
-input_var_list='so thetao uo vo'
+input_var_list='so thetao uo vo tos zos tauu tauv'
 
 save_eval_steps=800
 
 dist_port=$[12345+$[$RANDOM%12345]]
 
-output_dir=./output/train_stage1/exp10
+output_dir=./output/train_stage2/exp10
 data_dir=./data/train_data/
 # BCC-CSM2-MR
+soda_dir=YOUR_SODA_DATA_DIR # replace with your SODA data directory, e.g., ./download/valid_test_data/SODA2
+oras5_dir=YOUR_ORAS5_DATA_DIR # replace with your ORAS5 data directory, e.g., ./download/valid_test_data/ORAS5
+base_model_path=./output/train_stage1/exp10
 
 # If you use SLURM to launch the training script, you can use the following command:
 # node_num=1
 # gpu_per_node=4
 # srun -p YOUR_PARTITION_NAME --ntasks-per-node=$gpu_per_node -N $node_num --gres=gpu:$gpu_per_node --async \
-#     python -u train_stage1.py
+#     python -u train_stage2.py
 
 # Otherwise, you can use torchrun to launch the training script
 
 torchrun --nproc_per_node=$num_gpus \
-    train_stage1.py \
-        --in_chans 16 16 16 16 \
-        --out_chans 16 16 16 16 \
+    train_stage2.py \
         --max_t $max_t \
+        --atmo_var_list tauu tauv \
+        --atmo_dims 2 \
         --ignore_mismatched_sizes True \
         --do_train \
         --dist_port $dist_port \
@@ -54,6 +57,8 @@ torchrun --nproc_per_node=$num_gpus \
         --input_steps $input_steps \
         --predict_steps $predict_steps \
         --output_dir $output_dir \
+        --base_model_path $base_model_path \
+        --freeze_base_model True \
         --seed $seed \
         --report_to tensorboard \
         --log_level info \
@@ -70,7 +75,6 @@ torchrun --nproc_per_node=$num_gpus \
         --gradient_accumulation_steps 1 \
         --dataloader_num_workers 8 \
         --gradient_checkpointing False \
-        --fsdp "full_shard auto_wrap" \
         --learning_rate $lr \
         --weight_decay 0.1 \
         --max_grad_norm 0.0 \
@@ -80,9 +84,8 @@ torchrun --nproc_per_node=$num_gpus \
         --lr_scheduler_type cosine \
         --warmup_ratio 0.1 \
 
-        # --atmo_var_list tauu tauv \
-        # --atmo_dims 2 \
-        # --do_eval \
+        # --valid_data_dir $soda_dir $oras5_dir \   #验证集路径
+        # --do_eval \   #开启验证流程
         # --evaluation_strategy steps \
         # --eval_steps $save_eval_steps \
         # --load_best_model_at_end True

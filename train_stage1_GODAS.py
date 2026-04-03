@@ -1,15 +1,14 @@
 import os
 import json
 import logging
-import torch
-import torch.distributed as dist
 
 from transformers import set_seed, HfArgumentParser
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.trainer_pt_utils import get_model_param_count
 
-from dataset import DataArguments, Cmip6Dataset, ReanalyCombinedDataset
+from dataset import DataArguments, GodasDataset
 from model import ModelArguments, ORCADLConfig, BaseModel
+from dataclasses import replace
 
 from trainer import (
     Trainer, TrainingArguments,
@@ -26,7 +25,8 @@ def main():
     if data_args.data_config_path is not None:
         with open(data_args.data_config_path, 'r') as f:
             data_dict = json.load(f)
-        data_args = type("DataArguments", (), data_dict)
+        data_args = replace(data_args, **data_dict)
+        # data_args = type("DataArguments", (), data_dict)
 
     setup_logger(training_args, logger)
     training_args._setup_devices
@@ -55,13 +55,11 @@ def main():
     # 设定随机种子，保证可复现。
     set_seed(training_args.seed)
 
-    # ===============================
     # 构建训练/评估数据集。
-    # ===============================
-    train_dataset = Cmip6Dataset(data_args, split='train')
+    train_dataset = GodasDataset(data_args)
     eval_dataset = None
     if training_args.do_eval:
-        eval_dataset = ReanalyCombinedDataset(data_args, data_args.valid_data_dir, split='valid')
+        eval_dataset = GodasDataset(data_args)
 
     # 将输入变量名映射为索引，写入模型配置。
     var_list = train_dataset.get_input_var_list_cmip6()
@@ -70,18 +68,22 @@ def main():
     # 从头初始化模型或加载预训练权重。
     if model_args.model_path is None:
         logger.warning("Trying to train a model from scratch")
-        if model_args.model_config_path is not None:
-            logger.warning(f"Using model config defined in {model_args.model_config_path}")
-            config = ORCADLConfig.from_json_file(model_args.model_config_path)
-        else:
-            logger.warning("Using default model config")
-            config = ORCADLConfig()
+        logger.warning("Using default model config")
+        config = ORCADLConfig()
+        # if model_args.model_config_path is not None:
+        #     pass
+        #     logger.warning(f"Using model config defined in {model_args.model_config_path}")
+        #     config = ORCADLConfig.from_json_file(model_args.model_config_path)
+        # else:
+        #     logger.warning("Using default model config")
 
         config.update({
             'var_list': var_list,
             'var_index': var_index,
             'max_t': data_args.max_t,
             'predict_time_steps': data_args.predict_steps,
+            # 'in_chans': model_args.in_chans,
+            # 'out_chans': model_args.out_chans,
         })
         config.update_from_args(model_args)
 
@@ -110,6 +112,7 @@ def main():
         data_collator=collate_fn
     )
 
+    # ===== 训练阶段 =====
     # 执行训练（可断点续训），并保存指标与状态。
     if training_args.do_train:
         checkpoint = None
@@ -120,22 +123,6 @@ def main():
 
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         metrics = train_result.metrics
-
-        pred_mean_sum = float(getattr(model, '_train_pred_mean_sum', 0.0))
-        pred_mean_count = float(getattr(model, '_train_pred_mean_count', 0.0))
-
-        if pred_mean_count > 0:
-            if dist.is_available() and dist.is_initialized():
-                stats = torch.tensor([pred_mean_sum, pred_mean_count], device=training_args.device)
-                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-                pred_mean_sum, pred_mean_count = stats.tolist()
-
-            if pred_mean_count > 0:
-                metrics["train_pred_mean"] = pred_mean_sum / pred_mean_count
-
-        if hasattr(model, 'reset_train_pred_mean_stats'):
-            model.reset_train_pred_mean_stats()
-
         metrics["train_samples"] = len(train_dataset)
         metrics["params"] = get_model_param_count(model)
 
@@ -144,7 +131,7 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    # 如需评估则执行。
+    # ===== 评估阶段 =====
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
         metrics = trainer.evaluate(eval_dataset=eval_dataset)

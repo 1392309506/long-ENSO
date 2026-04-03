@@ -1,6 +1,6 @@
 
 output_dir=./output/test/exp1
-input_var_list='so thetao tos uo vo zos'  
+input_var_list='so thetao uo vo tos zos tauu tauv'  
 predict_steps=24
 input_steps=1
 

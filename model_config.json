@@ -1,6 +1,6 @@
 {
   "architectures": [
-    "ORCADLModel"
+    "BaseModel"
   ],
   "attn_drop": 0.0,
   "drop_path_rate": 0.2,
@@ -104,5 +104,11 @@
   "window_size": [
     8,
     15
-  ]
+  ],
+  "stage2_full_vars": ["so","thetao","uo","vo","tos","zos"],
+  "stage2_var_chans": [16,16,16,16,1,1],
+  "stage2_base_vars": ["so","thetao","uo","vo"],
+  "stage2_surface_vars": ["tos","zos"],
+  "stage2_target_vars": ["tos"]
+
 }

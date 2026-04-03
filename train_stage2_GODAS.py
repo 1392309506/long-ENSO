@@ -1,15 +1,18 @@
 import os
 import json
 import logging
-import torch
 import torch.distributed as dist
 
+from dataclasses import dataclass, field, replace
 from transformers import set_seed, HfArgumentParser
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.trainer_pt_utils import get_model_param_count
 
-from dataset import DataArguments, Cmip6Dataset, ReanalyCombinedDataset
-from model import ModelArguments, ORCADLConfig, BaseModel
+from dataset import DataArguments, GodasDataset
+from model.args import ModelArguments
+from model.base import ORCADLConfig
+from model.deepsea_model import BaseModel
+from model.perturb_model import PerturbationModel
 
 from trainer import (
     Trainer, TrainingArguments,
@@ -19,14 +22,27 @@ from trainer import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class Stage2Arguments:
+    base_model_path: str = field(default=None, metadata={"help": "Stage1 model path (save_pretrained directory)."})
+    freeze_base_model: bool = field(default=True, metadata={"help": "Freeze stage1 model during diffusion training."})
+
+
 def main():
-    parser = HfArgumentParser((TrainingArguments, DataArguments, ModelArguments))
-    training_args, data_args, model_args = parser.parse_args_into_dataclasses()
+    parser = HfArgumentParser((TrainingArguments, DataArguments, ModelArguments, Stage2Arguments))
+    training_args, data_args, model_args, stage2_args = parser.parse_args_into_dataclasses()
+
+    if stage2_args.freeze_base_model and training_args.fsdp:
+        training_args.fsdp = []
+        logger.warning(
+            "freeze_base_model=True with FSDP can fail on mixed requires_grad parameters; "
+            "auto-disabling FSDP for Stage2 frozen training."
+        )
 
     if data_args.data_config_path is not None:
         with open(data_args.data_config_path, 'r') as f:
             data_dict = json.load(f)
-        data_args = type("DataArguments", (), data_dict)
+        data_args = replace(data_args, **data_dict)
 
     setup_logger(training_args, logger)
     training_args._setup_devices
@@ -55,48 +71,59 @@ def main():
     # 设定随机种子，保证可复现。
     set_seed(training_args.seed)
 
-    # ===============================
     # 构建训练/评估数据集。
-    # ===============================
-    train_dataset = Cmip6Dataset(data_args, split='train')
+    train_dataset = GodasDataset(data_args)
     eval_dataset = None
     if training_args.do_eval:
-        eval_dataset = ReanalyCombinedDataset(data_args, data_args.valid_data_dir, split='valid')
+        eval_dataset = GodasDataset(data_args)
 
     # 将输入变量名映射为索引，写入模型配置。
     var_list = train_dataset.get_input_var_list_cmip6()
     var_index = [train_dataset.get_var_index(v) for v in var_list]
 
-    # 从头初始化模型或加载预训练权重。
-    if model_args.model_path is None:
-        logger.warning("Trying to train a model from scratch")
-        if model_args.model_config_path is not None:
-            logger.warning(f"Using model config defined in {model_args.model_config_path}")
-            config = ORCADLConfig.from_json_file(model_args.model_config_path)
-        else:
-            logger.warning("Using default model config")
-            config = ORCADLConfig()
+    if stage2_args.base_model_path is None:
+        raise ValueError("Stage2 requires --base_model_path pointing to stage1 checkpoint directory.")
 
-        config.update({
-            'var_list': var_list,
-            'var_index': var_index,
-            'max_t': data_args.max_t,
-            'predict_time_steps': data_args.predict_steps,
-        })
-        config.update_from_args(model_args)
-
-        model = BaseModel(config)
+    # 从指定配置文件或 base model checkpoint 加载配置。
+    if model_args.model_config_path is not None:
+        logger.warning(f"Using model config defined in {model_args.model_config_path}")
+        config = ORCADLConfig.from_json_file(model_args.model_config_path)
     else:
-        config = ORCADLConfig.from_pretrained(model_args.model_path)
-        config.update_from_args(model_args)
-        model = BaseModel.from_pretrained(
-            model_args.model_path,
-            config=config,
-            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes
-        )
-        model.config.update({
-            'predict_time_steps': data_args.predict_steps,
-        })
+        config = ORCADLConfig.from_pretrained(stage2_args.base_model_path)
+
+    base_var_list = list(config.var_list)
+    depth_count = config.in_chans[0] if config.in_chans else 16
+    single_lev_set = set(train_dataset.single_lev_vars)
+    stage2_var_chans = [1 if v in single_lev_set else depth_count for v in var_list]
+
+    config.update({
+        'var_list': var_list,
+        'var_index': var_index,
+        'max_t': data_args.max_t,
+        'predict_time_steps': data_args.predict_steps,
+    })
+    config.update_from_args(model_args)
+
+    # Stage-2 extra metadata for conditioning and target selection.
+    config.stage2_base_vars = base_var_list
+    config.stage2_full_vars = var_list
+    config.stage2_surface_vars = ['tos', 'zos']
+    config.stage2_target_vars = ['tos']
+    config.stage2_var_chans = stage2_var_chans
+
+    # Stage2 从已训练的 stage1 base model 开始。
+    base_model = BaseModel.from_pretrained(
+        stage2_args.base_model_path,
+        config=config,
+        ignore_mismatched_sizes=model_args.ignore_mismatched_sizes
+    )
+
+    # 在 base model 上叠加扰动头用于扩散训练。
+    model = PerturbationModel(
+        config=config,
+        base_model=base_model,
+        freeze_base_model=stage2_args.freeze_base_model
+    )
 
     logger.info(f"Model Config {model.config}")
 
@@ -120,22 +147,6 @@ def main():
 
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         metrics = train_result.metrics
-
-        pred_mean_sum = float(getattr(model, '_train_pred_mean_sum', 0.0))
-        pred_mean_count = float(getattr(model, '_train_pred_mean_count', 0.0))
-
-        if pred_mean_count > 0:
-            if dist.is_available() and dist.is_initialized():
-                stats = torch.tensor([pred_mean_sum, pred_mean_count], device=training_args.device)
-                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-                pred_mean_sum, pred_mean_count = stats.tolist()
-
-            if pred_mean_count > 0:
-                metrics["train_pred_mean"] = pred_mean_sum / pred_mean_count
-
-        if hasattr(model, 'reset_train_pred_mean_stats'):
-            model.reset_train_pred_mean_stats()
-
         metrics["train_samples"] = len(train_dataset)
         metrics["params"] = get_model_param_count(model)
 
@@ -157,9 +168,17 @@ def main():
         json.dump({
             'data_args': data_args.to_dict(),
             'model_args': model_args.to_dict(),
+            'stage2_args': {
+                'base_model_path': stage2_args.base_model_path,
+                'freeze_base_model': stage2_args.freeze_base_model,
+            },
             'training_args': training_args.to_dict(),
         }, fp, indent=2)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()

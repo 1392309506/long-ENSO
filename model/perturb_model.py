@@ -70,25 +70,9 @@ class PerturbationModel(BasePreTrainedModel):
         # -------------------------------------------------
         if base_model is None:
             self.backbone_model = BaseModel(config)
+            print("[PerturbationModel]: base_model is None. backbone_model = BaseModel(config)")
         else:
             self.backbone_model = base_model
-
-        # -------------------------------------------------
-        # 检查 BaseModel.forward 是否支持 atmo_vars
-        # -------------------------------------------------
-
-        # 读取 backbone_model 的 forward 方法
-        base_forward = getattr(self.backbone_model, "forward", None)
-
-        if base_forward is not None:
-            # 获取 forward 函数的参数列表
-            params = inspect.signature(base_forward).parameters
-
-            # 判断 forward 是否包含 atmo_vars 参数
-            self._base_accepts_atmo = "atmo_vars" in params
-        else:
-            # 如果没有 forward 方法，则默认不支持
-            self._base_accepts_atmo = False
 
         # -------------------------------------------------
         # 冻结 Stage-1
@@ -105,11 +89,12 @@ class PerturbationModel(BasePreTrainedModel):
         # -------------------------------------------------
         # 变量配置
         # -------------------------------------------------
-        self.stage2_full_vars = getattr(config, "stage2_full_vars", None)  # Stage-2 所有变量名称列表
-        self.stage2_base_vars = getattr(config, "stage2_base_vars", None) # Stage-1 使用的变量（作为 base input）
-        self.stage2_surface_vars = getattr(config, "stage2_surface_vars", None) # Stage-2 条件输入中的 surface 变量
-        self.stage2_target_vars = getattr(config, "stage2_target_vars", None) # Stage-2 需要预测的变量
-        self.stage2_var_chans = getattr(config, "stage2_var_chans", None) # 每个变量对应的 channel 数
+        self.stage2_full_vars = config.stage2_full_vars  # Stage-2 所有变量名称列表
+        self.stage2_deep_vars = config.stage2_deep_vars # Stage-1 使用的变量（作为 base input）
+        self.stage2_surface_vars = config.stage2_surface_vars # Stage-2 条件输入中的 surface 变量
+        self.stage2_atmo_vars = config.stage2_atmo_vars # Stage-2 条件输入中的 atmo 变量
+        self.stage2_target_vars = config.stage2_target_vars # Stage-2 需要预测的变量
+        self.stage2_var_chans = config.stage2_var_chans # 每个变量对应的 channel 数
 
         self._var_slices = None # 保存变量对应的 channel slice
 
@@ -119,7 +104,9 @@ class PerturbationModel(BasePreTrainedModel):
 
         self.base_chans = sum(config.out_chans) # BaseModel 输出通道数（所有变量 channel 之和）
         self.surface_chans = 0  # surface 变量默认 0
+        self.atmo_chans = 0  # atmo 变量默认 0
         self.target_chans = sum(config.out_chans) # diffusion 目标变量默认通道数
+        self._printed_channel_debug = False
 
         # -------------------------------------------------
         # 构建变量 channel slice
@@ -133,12 +120,15 @@ class PerturbationModel(BasePreTrainedModel):
             self._var_slices = self._build_var_slices(self.stage2_full_vars, self.stage2_var_chans)
 
             # 计算 base_vars 的总通道数
-            if self.stage2_base_vars:
-                self.base_chans = sum(self._slice_size(self._var_slices[v]) for v in self.stage2_base_vars)
+            if self.stage2_deep_vars:
+                self.base_chans = sum(self._slice_size(self._var_slices[v]) for v in self.stage2_deep_vars)
 
             # 计算 surface_vars 的总通道数
             if self.stage2_surface_vars:
                 self.surface_chans = sum(self._slice_size(self._var_slices[v]) for v in self.stage2_surface_vars)
+
+            if self.stage2_atmo_vars:
+                self.atmo_chans = sum(self._slice_size(self._var_slices[v]) for v in self.stage2_atmo_vars)
 
             # 计算 target_vars 的总通道数
             if self.stage2_target_vars:
@@ -150,7 +140,17 @@ class PerturbationModel(BasePreTrainedModel):
 
         # diffusion 条件输入通道数：
         # base prediction + surface vars + atmosphere vars
-        cond_chans = self.base_chans + self.surface_chans + config.atmo_dims
+        cond_chans = self.base_chans + self.surface_chans + self.atmo_chans
+        
+        # print("="*20)
+        # print("[PerturbationModel Chans]:")
+        # print("_var_slices: ",self._var_slices)
+        # print("base_chans: ",self.base_chans)
+        # print("surface_chans: ",self.surface_chans)
+        # print("atmo_chans: ",self.atmo_chans)
+        # print("target_chans: ",self.target_chans)
+        # print("cond_chans: ",cond_chans)
+        # print("="*20)
 
         # -------------------------------------------------
         # diffusion noise predictor
@@ -169,20 +169,20 @@ class PerturbationModel(BasePreTrainedModel):
         # -------------------------------------------------
 
         # 构造 beta schedule（噪声强度）
-        betas = torch.linspace(
+        biass = torch.linspace(
             config.diffusion_beta_start,   # beta 起始值
             config.diffusion_beta_end,     # beta 结束值
             config.diffusion_steps         # diffusion 总步数
         )
 
         # alpha_t = 1 - beta_t
-        alphas = 1.0 - betas
+        alphas = 1.0 - biass
 
         # ᾱ_t = ∏_{i=1..t} α_i
         alphas_cumprod = torch.cumprod(alphas, dim=0)
 
         # 将这些张量注册为 buffer（不会训练，但会随模型保存）
-        self.register_buffer("betas", betas)
+        self.register_buffer("biass", biass)
         self.register_buffer("alphas", alphas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
 
@@ -198,7 +198,7 @@ class PerturbationModel(BasePreTrainedModel):
         eps_pred = self.noise_model(x_t, t, cond)
 
         # 当前 timestep 的 beta_t
-        beta_t = self.betas[t].view(-1, 1, 1, 1)
+        beta_t = self.biass[t].view(-1, 1, 1, 1)
 
         # 当前 timestep 的 alpha_t
         alpha_t = self.alphas[t].view(-1, 1, 1, 1)
@@ -259,21 +259,89 @@ class PerturbationModel(BasePreTrainedModel):
         # 计算 slice 的大小
         return slic.stop - slic.start
 
+    def _expected_chans(self, var_names):
+
+        if not var_names:
+            return 0
+
+        if self._var_slices is None:
+            return None
+
+        return sum(self._slice_size(self._var_slices[v]) for v in var_names)
+
     def _select_vars(self, x, var_names):
+
+        if x is None:
+            return None
+
+        if not var_names:
+            return x[:, :0]
 
         # 如果没有 slice 信息则直接返回
         if self._var_slices is None:
             return x
 
-        # 按变量名称提取 channel
-        parts = [x[:, self._var_slices[v]] for v in var_names]
+        expected_selected = self._expected_chans(var_names)
+        expected_full = sum(self.stage2_var_chans) if self.stage2_var_chans else None
 
-        # 在 channel 维拼接
-        return torch.cat(parts, dim=1)
+        # 输入本身已经是目标变量分组（例如 deep/surface/atmo 已在 Dataset 中切好）。
+        if expected_selected is not None and x.shape[1] == expected_selected:
+            return x
+
+        # 输入是 full tensor，按 full-vars 的 slice 规则提取子变量。
+        if expected_full is not None and x.shape[1] == expected_full:
+            parts = [x[:, self._var_slices[v]] for v in var_names]
+            return torch.cat(parts, dim=1)
+
+        raise ValueError(
+            f"Unexpected channel size before slicing: got C={x.shape[1]}, "
+            f"expected selected={expected_selected}, expected full={expected_full}, "
+            f"vars={var_names}"
+        )
+
+    def _debug_var_slices(self):
+
+        if self._var_slices is None:
+            return "None"
+
+        parts = []
+        for v in self.stage2_full_vars:
+            s = self._var_slices[v]
+            parts.append(f"{v}:{s.start}-{s.stop}({self._slice_size(s)})")
+        return ", ".join(parts)
+
+    def _print_channel_audit_once(self, deep_vars, surface_vars, atmo_vars):
+
+        if self._printed_channel_debug:
+            return
+
+        deep_c = deep_vars.shape[1] if deep_vars is not None else 0
+        surface_c = surface_vars.shape[1] if surface_vars is not None else 0
+        atmo_c = atmo_vars.shape[1] if atmo_vars is not None else 0
+        cond_c = deep_c + surface_c + atmo_c
+
+        expected_base_c = sum(self.backbone_model.config.in_chans)
+        expected_cond_c = self.base_chans + self.surface_chans + self.atmo_chans
+
+        # print("=" * 80)
+        # print("[PerturbationModel] Channel Audit")
+        # print("stage2_full_vars:", self.stage2_full_vars)
+        # print("stage2_var_chans:", self.stage2_var_chans)
+        # print("var->slice:", self._debug_var_slices())
+        # print("selected channels | deep/surface/atmo:", (deep_c, surface_c, atmo_c))
+        # print("expected channels | base/surface/atmo:", (self.base_chans, self.surface_chans, self.atmo_chans))
+        # print("actual cond channels:", cond_c)
+        # print("expected cond channels:", expected_cond_c)
+        # print("backbone expected in_chans list:", self.backbone_model.config.in_chans)
+        # print("backbone expected total in_chans:", expected_base_c)
+        # print("=" * 80)
+
+        self._printed_channel_debug = True
 
     def forward(
         self,
-        ocean_vars: torch.FloatTensor,       # 海洋变量输入
+        deep_vars: torch.FloatTensor,
+        surface_vars: torch.FloatTensor,
         atmo_vars: torch.FloatTensor,        # 大气变量输入
         lead_time: Optional[torch.LongTensor] = None,
         atmo_lead_time: Optional[torch.LongTensor] = None,
@@ -291,22 +359,23 @@ class PerturbationModel(BasePreTrainedModel):
         model_dtype = self.noise_model.in_proj.weight.dtype
 
         # 如果指定了 base_vars 但没有 slice 信息
-        if self.stage2_base_vars and self._var_slices is None:
+        if self.stage2_deep_vars and self._var_slices is None:
             raise ValueError("stage2_full_vars and stage2_var_chans are required for Stage-2 conditioning.")
 
         # 提取 base 输入变量
-        base_inputs = self._select_vars(ocean_vars, self.stage2_base_vars) if self.stage2_base_vars else ocean_vars
+        deep_vars = self._select_vars(deep_vars, self.stage2_deep_vars)
+        surface_vars = self._select_vars(surface_vars, self.stage2_surface_vars)
+        atmo_vars = self._select_vars(atmo_vars, self.stage2_atmo_vars)
+        self._print_channel_audit_once(deep_vars, surface_vars, atmo_vars)
 
-        surface_inputs = None
-
-        # 提取 surface 变量
-        if self.stage2_surface_vars:
-            surface_inputs = self._select_vars(ocean_vars, self.stage2_surface_vars)
-
-        print("[PerturbationModel]lead_time:", lead_time[:5])
+        # print("[PerturbationModel]lead_time:", lead_time[:5])
         # 构造 BaseModel forward 参数
+        # print("[PerturbationModel]deep_vars shape:", deep_vars.shape)
+        # print("expected in_chans:", self.backbone_model.config.in_chans)
         base_kwargs = dict(
-            ocean_vars=base_inputs,
+            deep_vars=deep_vars,
+            # surface_vars=surface_vars,
+            # atmo_vars=atmo_vars,
             lead_time=lead_time,
             mask=mask,
             labels=None,
@@ -314,12 +383,10 @@ class PerturbationModel(BasePreTrainedModel):
             return_dict=True,
         )
 
-        # 如果 BaseModel 支持 atmo_vars
-        if self._base_accepts_atmo:
-            base_kwargs["atmo_vars"] = atmo_vars
-            base_kwargs["atmo_lead_time"] = atmo_lead_time
-
         # 运行 Stage-1
+        # print(f"DEBUG: base_kwargs keys = {base_kwargs.keys()}")
+        # if 'ocean_vars' in base_kwargs:
+        #     print(f"DEBUG: deep_vars shape = {base_kwargs['deep_vars'].shape}")
         base_out = self.backbone_model(**base_kwargs)
 
         # 获取预测结果
@@ -328,39 +395,40 @@ class PerturbationModel(BasePreTrainedModel):
         # 如果包含时间维则取第 0 步
         base_step = base_preds[:, 0] if base_preds.dim() == 5 else base_preds
 
+        # print("(PerturbationModel)base_preds mean:", base_step.mean().item())
+        # print("(PerturbationModel)base_preds std:", base_step.std().item())
+
         # labels 同样取第一步
         labels_step = labels[:, 0] if (labels is not None and labels.dim() == 5) else labels
 
+        if atmo_vars is None:
+            raise ValueError("atmo_vars are required for perturbation training.")
+
+        if surface_vars is None:
+            raise ValueError("surface_vars are required for perturbation training.")
         # ---------------- 推理模式 ----------------
         if labels_step is None:
-
-            if atmo_vars is None:
-                raise ValueError("atmo_vars is required for perturbation inference.")
-
-            if surface_inputs is None:
-                raise ValueError("surface_vars are required for Stage-2 conditioning.")
-
             # diffusion 条件输入
-            cond = torch.cat([base_step, surface_inputs, atmo_vars], dim=1).to(model_dtype)
+            cond = torch.cat([base_step, surface_vars, atmo_vars], dim=1).to(model_dtype)
 
             # 从 diffusion 采样生成 target
             target_hat = self.sample_delta(cond, (base_step.shape[0], self.target_chans) + base_step.shape[2:])
 
-            preds = target_hat
+            # ===============================================
+            # 其实我也不太清楚到底应该用哪个，但是预测效果很差
+            # ===============================================
+            # preds = target_hat
+            preds = base_step + target_hat
+            # ===============================================
 
             if not return_dict:
                 return (preds,)
-
+            
+            # 🔥 DEBUG: 只返回 Stage1
+            # return ORCADLOutput(loss=None, preds=base_step)
             return ORCADLOutput(loss=None, preds=preds)
 
         # ---------------- 训练模式 ----------------
-
-        if atmo_vars is None:
-            raise ValueError("atmo_vars is required for perturbation training.")
-
-        if surface_inputs is None:
-            raise ValueError("surface_vars are required for Stage-2 conditioning.")
-
         # 选择 target 变量
         target = self._select_vars(labels_step, self.stage2_target_vars) if self.stage2_target_vars else labels_step
 
@@ -385,7 +453,7 @@ class PerturbationModel(BasePreTrainedModel):
         x_t = sqrt_alpha * target + sqrt_one_minus * noise
 
         # diffusion 条件输入
-        cond = torch.cat([base_step, surface_inputs, atmo_vars], dim=1).to(model_dtype)
+        cond = torch.cat([base_step, surface_vars, atmo_vars], dim=1).to(model_dtype)
 
         # 预测噪声 ε_pred
         noise_pred = self.noise_model(x_t, t, cond)
@@ -410,7 +478,7 @@ class PerturbationModel(BasePreTrainedModel):
 
         if not has_backbone:
             raise RuntimeError(
-                "[ PerturbationModel ] Checkpoint does not contain BaseModel weights."
+                "[PerturbationModel] Checkpoint does not contain BaseModel weights."
             )
 
         return model
